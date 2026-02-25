@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PiOps Fleet</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: 'Courier New', monospace;
+  min-height: 100vh;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid #1e293b;
+  background: #080f1e;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+header h1 { font-size: 1.2rem; color: #f8fafc; letter-spacing: 0.08em; }
+#ts { font-size: 0.72rem; color: #334155; }
+
+/* ── Main ─────────────────────────────────────────────────────────────────── */
+main {
+  padding: 1.8rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #64748b;
+  margin-bottom: 0.9rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid #1e293b;
+}
+.count { color: #334155; margin-left: auto; }
+
+.dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dot.live    { background: #34d399; box-shadow: 0 0 5px #34d39966; }
+.dot.offline { background: #334155; }
+.dot.unknown { background: #fbbf24; box-shadow: 0 0 5px #fbbf2466; }
+
+/* ── Cards ────────────────────────────────────────────────────────────────── */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0.7rem;
+}
+.empty { color: #1e293b; font-size: 0.8rem; font-style: italic; padding: 0.2rem 0; }
+
+.card {
+  background: #1e293b;
+  border: 1px solid #1e293b;
+  border-radius: 7px;
+  padding: 0.9rem 1rem;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+  border-left-width: 3px;
+}
+.card:hover { border-color: #334155; background: #243047; }
+.card.live    { border-left-color: #34d399; }
+.card.offline { border-left-color: #334155; }
+.card.unknown { border-left-color: #fbbf24; }
+
+.card-id   { font-size: 0.72rem; color: #475569; margin-bottom: 0.2rem; word-break: break-all; }
+.card-role { font-size: 0.95rem; font-weight: bold; color: #f1f5f9; margin-bottom: 0.5rem; }
+.card-fw   { font-size: 0.7rem; color: #475569; margin-bottom: 0.5rem; }
+.card-meta { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.pill {
+  font-size: 0.65rem;
+  background: #0f172a;
+  color: #64748b;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+/* ── Overlay + panel ──────────────────────────────────────────────────────── */
+#overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 50;
+}
+#overlay.open { display: block; }
+
+#panel {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: min(460px, 100vw);
+  background: #0a0f1e;
+  border-left: 1px solid #1e293b;
+  display: flex;
+  flex-direction: column;
+  z-index: 51;
+  transform: translateX(100%);
+  transition: transform 0.18s ease;
+  overflow: hidden;
+}
+#panel.open { transform: translateX(0); }
+
+#panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 1.1rem 1.3rem;
+  border-bottom: 1px solid #1e293b;
+  background: #060c18;
+  flex-shrink: 0;
+}
+#panel-title { font-size: 0.95rem; font-weight: bold; color: #f1f5f9; }
+#panel-sub   { font-size: 0.72rem; color: #334155; margin-top: 2px; }
+
+#close-btn {
+  background: none;
+  border: 1px solid #1e293b;
+  color: #475569;
+  border-radius: 4px;
+  width: 26px; height: 26px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+#close-btn:hover { background: #1e293b; color: #94a3b8; }
+
+#panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.1rem 1.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.3rem;
+}
+
+.ps { display: flex; flex-direction: column; gap: 0.55rem; }
+.ps-title {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: #334155;
+  border-bottom: 1px solid #1e293b;
+  padding-bottom: 0.3rem;
+}
+
+.data-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.3rem 1.1rem;
+  font-size: 0.78rem;
+}
+.dk { color: #475569; white-space: nowrap; }
+.dv { color: #cbd5e1; font-family: monospace; }
+
+.btn-row { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.btn {
+  font-size: 0.72rem;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid #1e293b;
+  background: #1e293b;
+  color: #94a3b8;
+  cursor: pointer;
+  font-family: monospace;
+  transition: background 0.1s, border-color 0.1s;
+}
+.btn:hover { background: #253347; border-color: #334155; }
+.btn.green  { border-color: #34d39944; color: #34d399; }
+.btn.green:hover  { background: #34d39912; }
+.btn.red    { border-color: #f8717144; color: #f87171; }
+.btn.red:hover    { background: #f8717112; }
+.btn.amber  { border-color: #fbbf2444; color: #fbbf24; }
+.btn.amber:hover  { background: #fbbf2412; }
+
+.cmd-row { display: flex; gap: 0.4rem; }
+.cmd-input {
+  flex: 1;
+  background: #1e293b;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  color: #e2e8f0;
+  padding: 4px 9px;
+  font-family: monospace;
+  font-size: 0.78rem;
+}
+.cmd-input::placeholder { color: #334155; }
+.cmd-input:focus { outline: none; border-color: #334155; }
+
+#fw-compare {
+  font-size: 0.72rem;
+  padding: 6px 9px;
+  background: #1e293b;
+  border-radius: 4px;
+  color: #64748b;
+}
+#fw-compare .mismatch { color: #fbbf24; }
+
+#deploy-log {
+  background: #020617;
+  border: 1px solid #0f172a;
+  border-radius: 5px;
+  padding: 0.7rem;
+  font-size: 0.68rem;
+  line-height: 1.65;
+  color: #475569;
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  display: none;
+}
+#deploy-log.show { display: block; }
+
+#raw-json {
+  font-size: 0.65rem;
+  color: #334155;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+/* ── Version history ──────────────────────────────────────────────────────── */
+#version-list { display: flex; flex-direction: column; }
+.ver-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: 0.72rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid #0a0f1e;
+}
+.ver-row:last-child { border-bottom: none; }
+.ver-dot { font-size: 0.75rem; flex-shrink: 0; line-height: 1; }
+.ver-dot.running { color: #34d399; }
+.ver-dot.idle    { color: #1e293b; }
+.ver-fw   { color: #cbd5e1; min-width: 3.4rem; font-family: monospace; flex-shrink: 0; }
+.ver-date { color: #334155; font-size: 0.66rem; white-space: nowrap; flex-shrink: 0; }
+.ver-msg  { color: #475569; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.68rem; }
+.ver-badge { font-size: 0.58rem; color: #34d399; border: 1px solid #34d39944; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; }
+
+/* ── Change role ──────────────────────────────────────────────────────────── */
+.role-select {
+  background: #1e293b;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  color: #e2e8f0;
+  padding: 4px 9px;
+  font-family: monospace;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.role-select:focus { outline: none; border-color: #334155; }
+#role-warning { font-size: 0.65rem; margin-top: 0.4rem; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ PiOps Fleet</h1>
+  <span id="ts">connecting…</span>
+</header>
+
+<main>
+  <section>
+    <div class="section-heading">
+      <span class="dot live"></span> Known · Live
+      <span class="count" id="count-live">—</span>
+    </div>
+    <div class="cards" id="cards-live"><p class="empty">waiting for data…</p></div>
+  </section>
+
+  <section>
+    <div class="section-heading">
+      <span class="dot unknown"></span> Unknown · Live
+      <span class="count" id="count-unknown">—</span>
+    </div>
+    <div class="cards" id="cards-unknown"><p class="empty">none</p></div>
+  </section>
+
+  <section>
+    <div class="section-heading">
+      <span class="dot offline"></span> Known · Offline
+      <span class="count" id="count-offline">—</span>
+    </div>
+    <div class="cards" id="cards-offline"><p class="empty">none</p></div>
+  </section>
+</main>
+
+<!-- Detail panel -->
+<div id="overlay"></div>
+<div id="panel">
+  <div id="panel-header">
+    <div>
+      <div id="panel-title">—</div>
+      <div id="panel-sub"></div>
+    </div>
+    <button id="close-btn">✕</button>
+  </div>
+
+  <div id="panel-body">
+
+    <div class="ps" id="ps-telemetry">
+      <div class="ps-title">Telemetry</div>
+      <div class="data-grid" id="telem-grid"></div>
+    </div>
+
+    <div class="ps" id="ps-commands">
+      <div class="ps-title">Commands</div>
+      <div class="btn-row" id="quick-btns"></div>
+      <div class="cmd-row">
+        <input class="cmd-input" id="cmd-input" placeholder="custom command…" />
+        <button class="btn green" id="cmd-send">Send</button>
+      </div>
+    </div>
+
+    <div class="ps" id="ps-deploy">
+      <div class="ps-title">Deployment</div>
+      <div id="fw-compare"></div>
+      <div class="btn-row">
+        <button class="btn amber" id="deploy-btn">▶ Deploy</button>
+      </div>
+      <div id="deploy-log"></div>
+    </div>
+
+    <div class="ps" id="ps-history">
+      <div class="ps-title">Firmware History</div>
+      <div id="version-list"><span style="color:#334155;font-size:0.72rem">loading…</span></div>
+    </div>
+
+    <div class="ps" id="ps-role">
+      <div class="ps-title">Change Role</div>
+      <div class="btn-row" style="align-items:center">
+        <select class="role-select" id="role-select"></select>
+        <button class="btn amber" id="change-role-btn">Change Role</button>
+      </div>
+      <div id="role-warning"></div>
+    </div>
+
+    <div class="ps">
+      <div class="ps-title">Raw Heartbeat</div>
+      <pre id="raw-json"></pre>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function ago(ts) {
+  if (!ts) return 'never';
+  const s = Math.floor(Date.now() / 1000 - ts);
+  if (s < 5)    return 'just now';
+  if (s < 60)   return s + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm ago';
+}
+
+function fmtUptime(s) {
+  if (s == null) return '—';
+  if (s < 60)   return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+}
+
+function escHtml(str) {
+  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Card rendering ────────────────────────────────────────────────────────────
+function makeCard(d, cls) {
+  const card = document.createElement('div');
+  card.className = 'card ' + cls;
+  card.innerHTML = `
+    <div class="card-id">${d.device_id}</div>
+    <div class="card-role">${d.role || '<i>unassigned</i>'}</div>
+    <div class="card-fw">${d.fw || '—'}</div>
+    <div class="card-meta">
+      <span class="pill">${d.ip || '—'}</span>
+      ${d.rssi != null ? `<span class="pill">${d.rssi} dBm</span>` : ''}
+      <span class="pill">up ${fmtUptime(d.uptime)}</span>
+      <span class="pill">${ago(d.last_seen)}</span>
+      ${d.mode != null ? `<span class="pill">mode ${d.mode}</span>` : ''}
+    </div>`;
+  card.addEventListener('click', () => openPanel(d));
+  return card;
+}
+
+function renderSection(cardsId, countId, devices, cls) {
+  const el = document.getElementById(cardsId);
+  document.getElementById(countId).textContent = devices.length;
+  el.innerHTML = '';
+  if (!devices.length) { el.innerHTML = '<p class="empty">none</p>'; return; }
+  devices.forEach(d => el.appendChild(makeCard(d, cls)));
+}
+
+// ── Detail panel ──────────────────────────────────────────────────────────────
+let current = null;
+let deployES = null;
+let deploying = false;
+
+function setDeploying(val) {
+  deploying = val;
+  document.getElementById('deploy-btn').disabled = val;
+  document.querySelectorAll('.flash-btn, #change-role-btn').forEach(b => b.disabled = val);
+}
+
+function openPanel(d) {
+  current = d;
+  document.getElementById('panel-title').textContent = d.device_id;
+  document.getElementById('panel-sub').textContent =
+    d.role ? 'role: ' + d.role : 'unassigned — golden device or new';
+  document.getElementById('overlay').classList.add('open');
+  document.getElementById('panel').classList.add('open');
+  renderPanel(d);
+  if (d.role) {
+    loadVersions(d.device_id, d.fw);
+    loadRoles(d);
+  }
+}
+
+function closePanel() {
+  document.getElementById('overlay').classList.remove('open');
+  document.getElementById('panel').classList.remove('open');
+  current = null;
+  if (deployES) { deployES.close(); deployES = null; }
+}
+
+function renderPanel(d) {
+  // Telemetry
+  const rows = [
+    ['fw',         d.fw],
+    ['ip',         d.ip],
+    ['rssi',       d.rssi != null ? d.rssi + ' dBm' : null],
+    ['uptime',     fmtUptime(d.uptime)],
+    ['mode',       d.mode],
+    ['bri strip',  d.bri_strip],
+    ['bri matrix', d.bri_matrix],
+    ['last seen',  ago(d.last_seen)],
+    ['lw status',  d.lw_status],
+  ].filter(([, v]) => v != null && v !== undefined && v !== '');
+
+  document.getElementById('telem-grid').innerHTML = rows.map(([k, v]) =>
+    `<span class="dk">${k}</span><span class="dv">${v}</span>`
+  ).join('');
+
+  // Quick commands
+  const qb = document.getElementById('quick-btns');
+  qb.innerHTML = '';
+  const cmds = [['status', ''], ['reboot', 'red']];
+  if (d.fw && d.fw.includes('lid-av')) {
+    cmds.unshift(['mode:2', 'green'], ['mode:1', ''], ['mode:0', '']);
+  }
+  cmds.forEach(([cmd, cls]) => {
+    const b = document.createElement('button');
+    b.className = 'btn' + (cls ? ' ' + cls : '');
+    b.textContent = cmd;
+    b.onclick = () => sendCmd(d.device_id, cmd);
+    qb.appendChild(b);
+  });
+
+  // Deploy section
+  const psD = document.getElementById('ps-deploy');
+  const psHistory = document.getElementById('ps-history');
+  const psRole = document.getElementById('ps-role');
+  if (d.role) {
+    psD.style.display = '';
+    psHistory.style.display = '';
+    psRole.style.display = '';
+    const fc = document.getElementById('fw-compare');
+    const match = d.fw === d.source_fw;
+    fc.innerHTML = match
+      ? `device + source: <span style="color:#34d399">${d.fw}</span>`
+      : `device: <span class="mismatch">${d.fw || '—'}</span> &nbsp; source: <span style="color:#34d399">${d.source_fw || '—'}</span>`;
+  } else {
+    psD.style.display = 'none';
+    psHistory.style.display = 'none';
+    psRole.style.display = 'none';
+  }
+
+  // Reset deploy log only when not actively streaming
+  if (!deploying) {
+    const log = document.getElementById('deploy-log');
+    log.textContent = '';
+    log.classList.remove('show');
+  }
+
+  // Raw JSON
+  document.getElementById('raw-json').textContent =
+    JSON.stringify(d.raw || {}, null, 2);
+}
+
+// ── Commands ──────────────────────────────────────────────────────────────────
+function sendCmd(deviceId, cmd) {
+  fetch(`/api/devices/${encodeURIComponent(deviceId)}/cmd`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cmd }),
+  });
+}
+
+document.getElementById('cmd-send').addEventListener('click', () => {
+  if (!current) return;
+  const inp = document.getElementById('cmd-input');
+  const cmd = inp.value.trim();
+  if (cmd) { sendCmd(current.device_id, cmd); inp.value = ''; }
+});
+
+document.getElementById('cmd-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('cmd-send').click();
+});
+
+// ── Deploy ────────────────────────────────────────────────────────────────────
+document.getElementById('deploy-btn').addEventListener('click', () => {
+  if (!current?.role || deploying) return;
+  const log = document.getElementById('deploy-log');
+  log.textContent = '';
+  log.classList.add('show');
+  setDeploying(true);
+  if (deployES) deployES.close();
+  deployES = new EventSource(`/api/devices/${encodeURIComponent(current.device_id)}/deploy`);
+  deployES.onmessage = e => {
+    if (e.data === '__DONE__') { deployES.close(); deployES = null; setDeploying(false); return; }
+    log.textContent += e.data + '\n';
+    log.scrollTop = log.scrollHeight;
+  };
+});
+
+// ── POST streaming (rollback + assign_role) ───────────────────────────────────
+async function streamPost(url, body, onDone) {
+  const log = document.getElementById('deploy-log');
+  log.textContent = '';
+  log.classList.add('show');
+  setDeploying(true);
+
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    log.textContent = '✗ Network error: ' + e.message + '\n';
+    setDeploying(false);
+    return;
+  }
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    log.textContent = '✗ ' + (err.error || resp.statusText) + '\n';
+    setDeploying(false);
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6);
+          if (payload === '__DONE__') {
+            setDeploying(false);
+            if (onDone) onDone();
+            return;
+          }
+          try { log.textContent += JSON.parse(payload) + '\n'; }
+          catch { log.textContent += payload + '\n'; }
+          log.scrollTop = log.scrollHeight;
+        }
+      }
+    }
+  } catch (e) {
+    log.textContent += '\n✗ Stream error: ' + e.message + '\n';
+  }
+  setDeploying(false);
+}
+
+// ── Version history ───────────────────────────────────────────────────────────
+async function loadVersions(deviceId, deviceFw) {
+  const el = document.getElementById('version-list');
+  el.innerHTML = '<span style="color:#334155;font-size:0.72rem">loading…</span>';
+  try {
+    const resp = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/versions`);
+    const data = await resp.json();
+    if (data.error) { el.textContent = '✗ ' + data.error; return; }
+    const { versions, current_fw } = data;
+    if (!versions.length) {
+      el.innerHTML = '<span style="color:#334155;font-size:0.72rem">no history</span>';
+      return;
+    }
+    el.innerHTML = '';
+    versions.forEach(v => {
+      const isCurrent = v.fw_version === current_fw;
+      const isRunning = v.fw_version === deviceFw;
+      const row = document.createElement('div');
+      row.className = 'ver-row';
+      row.innerHTML =
+        `<span class="ver-dot ${isRunning ? 'running' : 'idle'}">${isRunning ? '●' : '○'}</span>` +
+        `<span class="ver-fw">${escHtml(v.fw_version || '?')}</span>` +
+        `<span class="ver-date">${escHtml(v.date)}</span>` +
+        `<span class="ver-msg" title="${escHtml(v.commit_msg)}">${escHtml(v.commit_msg)}</span>` +
+        (isCurrent ? '<span class="ver-badge">source</span>' : '');
+      if (!isCurrent) {
+        const btn = document.createElement('button');
+        btn.className = 'btn flash-btn';
+        btn.textContent = 'Flash';
+        btn.disabled = deploying;
+        btn.onclick = () => {
+          if (deploying) return;
+          const label = v.fw_version || v.hash.slice(0, 8);
+          if (!confirm(`Flash ${label} (${v.commit_msg}) to this device?`)) return;
+          streamPost(
+            `/api/devices/${encodeURIComponent(deviceId)}/rollback`,
+            { commit_hash: v.hash },
+            () => { if (current) loadVersions(current.device_id, current.fw); }
+          );
+        };
+        row.appendChild(btn);
+      }
+      el.appendChild(row);
+    });
+  } catch (e) {
+    el.textContent = '✗ Error loading history';
+  }
+}
+
+// ── Change role ───────────────────────────────────────────────────────────────
+async function loadRoles(d) {
+  const sel = document.getElementById('role-select');
+  const warn = document.getElementById('role-warning');
+  sel.innerHTML = '<option value="">loading…</option>';
+  try {
+    const resp = await fetch('/api/roles');
+    const data = await resp.json();
+    sel.innerHTML = '';
+    data.roles.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.role;
+      opt.textContent = r.role + (r.source_fw ? '  ' + r.source_fw : '');
+      if (r.role === d.role) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  } catch {
+    sel.innerHTML = '<option value="">error</option>';
+  }
+  const live = d.ip && (Date.now() / 1000 - (d.last_seen || 0)) < 90;
+  const btn = document.getElementById('change-role-btn');
+  btn.disabled = !live || deploying;
+  if (!live) {
+    warn.textContent = '⚠ Device must be live (has an IP) to change role';
+    warn.style.color = '#f87171';
+  } else {
+    warn.textContent = '⚠ Device will reboot with a new identity and appear in Unknown · Live';
+    warn.style.color = '#94a3b8';
+  }
+}
+
+document.getElementById('change-role-btn').addEventListener('click', () => {
+  if (!current || deploying) return;
+  const role = document.getElementById('role-select').value;
+  if (!role) return;
+  if (!confirm(`Change device to role "${role}"?\n\nIt will reboot with a new firmware identity and appear in Unknown · Live.`)) return;
+  streamPost(
+    `/api/devices/${encodeURIComponent(current.device_id)}/assign_role`,
+    { role },
+  );
+});
+
+// ── Close panel ───────────────────────────────────────────────────────────────
+document.getElementById('close-btn').addEventListener('click', closePanel);
+document.getElementById('overlay').addEventListener('click', closePanel);
+
+// ── SSE: live state updates ───────────────────────────────────────────────────
+const es = new EventSource('/events');
+es.onmessage = e => {
+  const data = JSON.parse(e.data);
+  document.getElementById('ts').textContent =
+    'updated ' + new Date(data.ts * 1000).toLocaleTimeString();
+  renderSection('cards-live',    'count-live',    data.known_live,    'live');
+  renderSection('cards-unknown', 'count-unknown', data.unknown_live,  'unknown');
+  renderSection('cards-offline', 'count-offline', data.known_offline, 'offline');
+
+  // Refresh open panel if its device appears in this update
+  if (current) {
+    const all = [...data.known_live, ...data.known_offline, ...data.unknown_live];
+    const updated = all.find(d => d.device_id === current.device_id);
+    if (updated) { current = updated; renderPanel(updated); }
+  }
+};
+es.onerror = () => {
+  document.getElementById('ts').textContent = 'reconnecting…';
+};
+</script>
+</body>
+</html>
