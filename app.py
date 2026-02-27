@@ -17,7 +17,7 @@ from flask import Flask, Response, jsonify, render_template, request, stream_wit
 
 # ── Config ────────────────────────────────────────────────────────────────────
 REPO_ROOT    = Path("/home/pi/projects/esp32-firmware")
-MQTT_HOST    = "192.168.0.200"
+MQTT_HOST    = "10.77.0.10"
 MQTT_PORT    = 1883
 MQTT_USER    = "esp32"
 MQTT_PASS    = "iq2tz0QE9qVfjMZ"
@@ -45,6 +45,14 @@ def load_registry() -> dict:
     return reg
 
 
+def build_mode(role: str) -> str:
+    """Read .build_mode for a role, default 'local'."""
+    p = REPO_ROOT / "devices" / role / ".build_mode"
+    if p.exists():
+        return p.read_text().strip() or "local"
+    return "local"
+
+
 def source_fw(role: str):
     """Read FW_VERSION string from source for a role, or None."""
     src = REPO_ROOT / "devices" / role / "src" / "main.cpp"
@@ -61,8 +69,13 @@ def source_fw(role: str):
 # ── MQTT ──────────────────────────────────────────────────────────────────────
 
 def _on_connect(client, userdata, flags, rc):
+    print(f"[MQTT] Connected (rc={rc}), subscribing…", flush=True)
     client.subscribe("piops/+/heartbeat")
     client.subscribe("piops/+/status")
+
+
+def _on_disconnect(client, userdata, rc):
+    print(f"[MQTT] Disconnected (rc={rc}), will reconnect…", flush=True)
 
 
 def _on_message(client, userdata, msg):
@@ -99,11 +112,14 @@ def _mqtt_thread():
     _mqtt_client.username_pw_set(MQTT_USER, MQTT_PASS)
     _mqtt_client.on_connect = _on_connect
     _mqtt_client.on_message = _on_message
+    _mqtt_client.on_disconnect = _on_disconnect
+    _mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
     while True:
         try:
             _mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
-            _mqtt_client.loop_forever()
-        except Exception:
+            _mqtt_client.loop_forever(retry_first_connection=True)
+        except Exception as e:
+            print(f"[MQTT] Connection error: {e}, retrying in 5s…", flush=True)
             time.sleep(5)
 
 
@@ -122,7 +138,8 @@ def snapshot() -> dict:
     for did, role in reg.items():
         d = state.get(did, {})
         age = now - d.get("last_seen", 0)
-        rec = dict(device_id=did, role=role, source_fw=source_fw(role), **d)
+        rec = dict(device_id=did, role=role, source_fw=source_fw(role),
+                   build_mode=build_mode(role), **d)
         (known_live if age < OFFLINE_SECS else known_offline).append(rec)
 
     # Unknown live devices (heartbeat seen, no .device_id)
@@ -183,10 +200,12 @@ def api_deploy(device_id):
     if not role:
         return jsonify(error="no role assigned — add devices/<role>/.device_id first"), 400
 
+    mode = build_mode(role)
+
     def generate():
-        yield f"data: {json.dumps('▶ deploy.sh ' + role)}\n\n"
+        yield f"data: {json.dumps(f'▶ deploy.sh {role} --{mode}')}\n\n"
         proc = subprocess.Popen(
-            [str(REPO_ROOT / "tools" / "deploy.sh"), role],
+            [str(REPO_ROOT / "tools" / "deploy.sh"), role, f"--{mode}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -282,10 +301,11 @@ def api_rollback(device_id):
     rolled_src = show.stdout
     target = REPO_ROOT / "devices" / role / "src" / "main.cpp"
     backup = target.read_text()
+    mode = build_mode(role)
 
     def generate():
         label = fw_ver or commit_hash[:8]
-        yield f"data: {json.dumps(f'▶ rollback {role} to {label}')}\n\n"
+        yield f"data: {json.dumps(f'▶ rollback {role} --{mode} to {label}')}\n\n"
         try:
             target.write_text(rolled_src)
         except Exception as exc:
@@ -294,7 +314,7 @@ def api_rollback(device_id):
             return
 
         proc = subprocess.Popen(
-            [str(REPO_ROOT / "tools" / "deploy.sh"), role],
+            [str(REPO_ROOT / "tools" / "deploy.sh"), role, f"--{mode}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )
@@ -349,10 +369,12 @@ def api_assign_role(device_id):
     if not ip or not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', ip):
         return jsonify(error="device has no IP — must be live"), 400
 
+    mode = build_mode(role)
+
     def generate():
-        yield f"data: {json.dumps(f'▶ assign {role} → {device_id} ({ip})')}\n\n"
+        yield f"data: {json.dumps(f'▶ assign {role} {ip} --{mode} → {device_id}')}\n\n"
         proc = subprocess.Popen(
-            [str(REPO_ROOT / "tools" / "deploy.sh"), role, ip],
+            [str(REPO_ROOT / "tools" / "deploy.sh"), role, ip, f"--{mode}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )
