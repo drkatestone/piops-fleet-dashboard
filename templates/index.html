@@ -194,6 +194,45 @@ main {
 .btn.amber  { border-color: #fbbf2444; color: #fbbf24; }
 .btn.amber:hover  { background: #fbbf2412; }
 
+/* ── Touch channel visualiser ─────────────────────────────────────────────── */
+.touch-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+}
+.touch-ch {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  padding: 4px 0;
+  text-align: center;
+  font-size: 0.65rem;
+  font-family: monospace;
+  transition: background 0.15s, border-color 0.15s;
+  position: relative;
+}
+.touch-ch.active {
+  background: #34d39918;
+  border-color: #34d399;
+}
+.touch-ch-num { color: #475569; font-size: 0.6rem; }
+.touch-ch-bar {
+  height: 3px;
+  margin: 3px 3px 0;
+  border-radius: 2px;
+  background: #1e293b;
+  overflow: hidden;
+}
+.touch-ch-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #334155;
+  transition: width 0.2s, background 0.2s;
+}
+.touch-ch.active .touch-ch-bar-fill { background: #34d399; }
+.touch-ch-delta { color: #64748b; font-size: 0.58rem; margin-top: 2px; }
+.touch-ch.active .touch-ch-delta { color: #34d399; }
+
 .cmd-row { display: flex; gap: 0.4rem; }
 .cmd-input {
   flex: 1;
@@ -272,6 +311,43 @@ main {
 }
 .role-select:focus { outline: none; border-color: #334155; }
 #role-warning { font-size: 0.65rem; margin-top: 0.4rem; line-height: 1.5; }
+
+/* ── USB Flash section ───────────────────────────────────────────────────── */
+#usb-section {
+  display: none;
+  background: #1a2332;
+  border: 1px solid #334155;
+  border-left: 3px solid #60a5fa;
+  border-radius: 7px;
+  padding: 1rem 1.2rem;
+}
+#usb-section.show { display: block; }
+.usb-heading {
+  font-size: 0.78rem;
+  font-weight: bold;
+  color: #60a5fa;
+  margin-bottom: 0.7rem;
+}
+.usb-port-info {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin-bottom: 0.7rem;
+}
+.usb-controls { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.7rem; }
+#usb-log {
+  background: #020617;
+  border: 1px solid #0f172a;
+  border-radius: 5px;
+  padding: 0.7rem;
+  font-size: 0.68rem;
+  line-height: 1.65;
+  color: #475569;
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  display: none;
+}
+#usb-log.show { display: block; }
 </style>
 </head>
 <body>
@@ -282,6 +358,16 @@ main {
 </header>
 
 <main>
+  <section id="usb-section">
+    <div class="usb-heading">&#128268; USB Device Detected</div>
+    <div class="usb-port-info" id="usb-port-info"></div>
+    <div class="usb-controls">
+      <select class="role-select" id="usb-role-select"><option value="">loading…</option></select>
+      <button class="btn green" id="usb-flash-btn">&#9889; Flash via USB</button>
+    </div>
+    <div id="usb-log"></div>
+  </section>
+
   <section>
     <div class="section-heading">
       <span class="dot live"></span> Known · Live
@@ -331,6 +417,20 @@ main {
       <div class="cmd-row">
         <input class="cmd-input" id="cmd-input" placeholder="custom command…" />
         <button class="btn green" id="cmd-send">Send</button>
+      </div>
+    </div>
+
+    <div class="ps" id="ps-adopt" style="display:none">
+      <div class="ps-title">Adopt Device</div>
+      <p style="font-size:0.72rem;color:#64748b;line-height:1.5">Describe what this device should do, or pick a role manually.</p>
+      <div style="display:flex;gap:0.4rem;align-items:flex-start">
+        <input class="cmd-input" id="suggest-input" placeholder="e.g. 16x16 LED matrix on a lid with edge lighting" style="flex:1" />
+        <button class="btn green" id="suggest-btn">Suggest</button>
+      </div>
+      <div id="suggest-box" style="display:none;font-size:0.72rem;line-height:1.5;padding:8px 10px;background:#1e293b;border-radius:5px;border-left:3px solid #34d399;color:#94a3b8"></div>
+      <div class="btn-row" style="align-items:center">
+        <select class="role-select" id="adopt-role-select"></select>
+        <button class="btn green" id="adopt-btn">Adopt</button>
       </div>
     </div>
 
@@ -387,6 +487,39 @@ function escHtml(str) {
   return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Telemetry config ──────────────────────────────────────────────────────────
+const TELEM_GROUPS = [
+  { name: 'Power',       keys: ['vbus','current_a','power_w','soc','wh_used','wh_charged','wh_net'] },
+  { name: 'Temperature', keys: ['temps','temp_max','temp_ctrl','temp_addrs'] },
+  { name: 'Fan',         keys: ['fan_percent','fan_pwm_raw','fan_status'] },
+  { name: 'Touch',       keys: ['touch_data','state','channels'], custom: 'touch' },
+];
+const UNITS = {
+  vbus:'V', current_a:'A', power_w:'W', soc:'%',
+  wh_used:'Wh', wh_charged:'Wh', wh_net:'Wh',
+  temp_max:'°C', temp_ctrl:'°C', fan_percent:'%',
+};
+const TELEM_LABELS = {
+  vbus:'Voltage', current_a:'Current', power_w:'Power', soc:'SoC',
+  wh_used:'Used', wh_charged:'Charged', wh_net:'Net',
+  temps:'Probes', temp_max:'Max Temp', temp_ctrl:'Control', temp_addrs:'Addresses',
+  fan_percent:'Fan %', fan_pwm_raw:'PWM Raw', fan_status:'Fan Status',
+  touch_data:'Channel Data', state:'Touch State', channels:'Channels',
+};
+
+function fmtTelemValue(key, raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map(v => typeof v === 'number' ? v.toFixed(1) : v).join(', ');
+    }
+  } catch {}
+  const unit = UNITS[key] || '';
+  const num = parseFloat(raw);
+  if (!isNaN(num) && unit) return num.toFixed(num % 1 === 0 ? 0 : 2) + ' ' + unit;
+  return raw;
+}
+
 // ── Card rendering ────────────────────────────────────────────────────────────
 function makeCard(d, cls) {
   const card = document.createElement('div');
@@ -422,7 +555,7 @@ let deploying = false;
 function setDeploying(val) {
   deploying = val;
   document.getElementById('deploy-btn').disabled = val;
-  document.querySelectorAll('.flash-btn, #change-role-btn').forEach(b => b.disabled = val);
+  document.querySelectorAll('.flash-btn, #change-role-btn, #adopt-btn').forEach(b => b.disabled = val);
 }
 
 function openPanel(d) {
@@ -434,8 +567,12 @@ function openPanel(d) {
   document.getElementById('panel').classList.add('open');
   renderPanel(d);
   if (d.role) {
+    document.getElementById('ps-adopt').style.display = 'none';
     loadVersions(d.device_id, d.fw);
     loadRoles(d);
+  } else {
+    document.getElementById('ps-adopt').style.display = '';
+    loadAdoptRoles();
   }
 }
 
@@ -471,6 +608,9 @@ function renderPanel(d) {
   if (d.fw && d.fw.includes('lid-av')) {
     cmds.unshift(['mode:2', 'green'], ['mode:1', ''], ['mode:0', '']);
   }
+  if (d.fw && d.fw.includes('touch')) {
+    cmds.unshift(['recalibrate', 'green']);
+  }
   cmds.forEach(([cmd, cls]) => {
     const b = document.createElement('button');
     b.className = 'btn' + (cls ? ' ' + cls : '');
@@ -478,15 +618,36 @@ function renderPanel(d) {
     b.onclick = () => sendCmd(d.device_id, cmd);
     qb.appendChild(b);
   });
+  // BLE-MIDI: "Prepare OTA" button — publishes retained "ota" flag
+  if (d.fw && d.fw.includes('ble-midi')) {
+    const ob = document.createElement('button');
+    ob.className = 'btn amber';
+    ob.textContent = '\u{1F4E1} Prepare OTA';
+    ob.onclick = () => {
+      if (!confirm('This will set the OTA flag for ' + d.device_id +
+          '.\n\nPower-cycle the device to enter OTA mode.\nThe flag is cleared automatically after boot.')) return;
+      fetch(`/api/devices/${encodeURIComponent(d.device_id)}/cmd`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cmd: 'ota', retain: true }),
+      }).then(() => {
+        ob.textContent = '\u2705 OTA flag set — power-cycle device';
+        ob.disabled = true;
+      });
+    };
+    qb.appendChild(ob);
+  }
 
-  // Deploy section
+  // Deploy section + adopt section visibility
   const psD = document.getElementById('ps-deploy');
   const psHistory = document.getElementById('ps-history');
   const psRole = document.getElementById('ps-role');
+  const psAdopt = document.getElementById('ps-adopt');
   if (d.role) {
     psD.style.display = '';
     psHistory.style.display = '';
     psRole.style.display = '';
+    psAdopt.style.display = 'none';
     const fc = document.getElementById('fw-compare');
     const match = d.fw === d.source_fw;
     fc.innerHTML = match
@@ -496,6 +657,7 @@ function renderPanel(d) {
     psD.style.display = 'none';
     psHistory.style.display = 'none';
     psRole.style.display = 'none';
+    psAdopt.style.display = '';
   }
 
   // Reset deploy log only when not actively streaming
@@ -503,6 +665,81 @@ function renderPanel(d) {
     const log = document.getElementById('deploy-log');
     log.textContent = '';
     log.classList.remove('show');
+  }
+
+  // Device telemetry groups
+  document.querySelectorAll('.ps-telem-group').forEach(el => el.remove());
+  if (d.telemetry && Object.keys(d.telemetry).length > 0) {
+    const anchor = document.querySelector('#panel-body .ps:last-child'); // raw JSON section
+    const usedKeys = new Set();
+
+    for (const group of TELEM_GROUPS) {
+      const present = group.keys.filter(k => d.telemetry[k]);
+      if (!present.length) continue;
+      usedKeys.add(...present);
+      present.forEach(k => usedKeys.add(k));
+
+      const sec = document.createElement('div');
+      sec.className = 'ps ps-telem-group';
+
+      if (group.custom === 'touch' && d.telemetry.touch_data) {
+        // Custom touch channel visualiser
+        sec.innerHTML = `<div class="ps-title">${group.name}</div><div class="touch-grid" id="touch-grid"></div>`;
+        const grid = sec.querySelector('.touch-grid');
+        try {
+          const chData = JSON.parse(d.telemetry.touch_data.value);
+          for (let i = 0; i < chData.length; i++) {
+            const [base, filt, delta, active] = chData[i];
+            const pct = Math.min(Math.max(delta / 12 * 100, 0), 100);
+            const cell = document.createElement('div');
+            cell.className = 'touch-ch' + (active ? ' active' : '');
+            cell.innerHTML =
+              `<div class="touch-ch-num">${i}</div>` +
+              `<div class="touch-ch-bar"><div class="touch-ch-bar-fill" style="width:${pct}%"></div></div>` +
+              `<div class="touch-ch-delta">${delta}</div>`;
+            cell.title = `ch${i}: base=${base} filt=${filt} delta=${delta}`;
+            grid.appendChild(cell);
+          }
+        } catch {}
+        // Add state + channels below the grid if present
+        const extras = ['state','channels'].filter(k => d.telemetry[k]);
+        if (extras.length) {
+          const dg = document.createElement('div');
+          dg.className = 'data-grid';
+          dg.style.marginTop = '0.5rem';
+          for (const k of extras) {
+            const label = TELEM_LABELS[k] || k;
+            const val = fmtTelemValue(k, d.telemetry[k].value);
+            dg.innerHTML += `<span class="dk">${escHtml(label)}</span><span class="dv">${escHtml(val)}</span>`;
+          }
+          sec.appendChild(dg);
+        }
+      } else {
+        // Standard key-value grid
+        sec.innerHTML = `<div class="ps-title">${group.name}</div><div class="data-grid"></div>`;
+        const grid = sec.querySelector('.data-grid');
+        for (const k of present) {
+          const label = TELEM_LABELS[k] || k;
+          const val = fmtTelemValue(k, d.telemetry[k].value);
+          grid.innerHTML += `<span class="dk">${escHtml(label)}</span><span class="dv">${escHtml(val)}</span>`;
+        }
+      }
+      anchor.parentNode.insertBefore(sec, anchor);
+    }
+
+    // "Other" group for ungrouped keys
+    const otherKeys = Object.keys(d.telemetry).filter(k => !usedKeys.has(k));
+    if (otherKeys.length) {
+      const sec = document.createElement('div');
+      sec.className = 'ps ps-telem-group';
+      sec.innerHTML = `<div class="ps-title">Other</div><div class="data-grid"></div>`;
+      const grid = sec.querySelector('.data-grid');
+      for (const k of otherKeys) {
+        const val = fmtTelemValue(k, d.telemetry[k].value);
+        grid.innerHTML += `<span class="dk">${escHtml(k)}</span><span class="dv">${escHtml(val)}</span>`;
+      }
+      anchor.parentNode.insertBefore(sec, anchor);
+    }
   }
 
   // Raw JSON
@@ -694,6 +931,197 @@ document.getElementById('change-role-btn').addEventListener('click', () => {
     { role },
   );
 });
+
+// ── Adopt device ──────────────────────────────────────────────────────────────
+async function loadAdoptRoles() {
+  const sel = document.getElementById('adopt-role-select');
+  sel.innerHTML = '<option value="">loading…</option>';
+  try {
+    const resp = await fetch('/api/roles');
+    const data = await resp.json();
+    sel.innerHTML = '<option value="">— select role —</option>';
+    data.roles.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.role;
+      opt.textContent = r.role + (r.source_fw ? '  ' + r.source_fw : '');
+      sel.appendChild(opt);
+    });
+  } catch {
+    sel.innerHTML = '<option value="">error loading roles</option>';
+  }
+}
+
+// ── Suggest role (LLM) ────────────────────────────────────────────────────────
+document.getElementById('suggest-btn').addEventListener('click', suggestRole);
+document.getElementById('suggest-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') suggestRole();
+});
+
+async function suggestRole() {
+  const input = document.getElementById('suggest-input');
+  const box = document.getElementById('suggest-box');
+  const desc = input.value.trim();
+  if (!desc) return;
+  box.style.display = 'block';
+  box.style.borderLeftColor = '#fbbf24';
+  box.textContent = 'Thinking…';
+  document.getElementById('suggest-btn').disabled = true;
+  try {
+    const resp = await fetch('/api/suggest_role', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: desc }),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      box.style.borderLeftColor = '#f87171';
+      box.textContent = 'Error: ' + data.error;
+      return;
+    }
+    box.style.borderLeftColor = '#34d399';
+    box.innerHTML = data.explanation ? escHtml(data.explanation) : 'No match found.';
+    if (data.role) {
+      const sel = document.getElementById('adopt-role-select');
+      for (let i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === data.role) {
+          sel.selectedIndex = i;
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    box.style.borderLeftColor = '#f87171';
+    box.textContent = 'Network error: ' + e.message;
+  } finally {
+    document.getElementById('suggest-btn').disabled = false;
+  }
+}
+
+document.getElementById('adopt-btn').addEventListener('click', () => {
+  if (!current || deploying) return;
+  const role = document.getElementById('adopt-role-select').value;
+  if (!role) return;
+  if (!confirm(`Adopt this device as "${role}"?\n\nIt will be flashed with ${role} firmware, and its new identity will be registered in the fleet.`)) return;
+  streamPost(
+    `/api/devices/${encodeURIComponent(current.device_id)}/adopt`,
+    { role },
+    () => { /* adoption complete — SSE will move device to Known Live */ }
+  );
+});
+
+// ── USB Flash ─────────────────────────────────────────────────────────────────
+let usbPorts = [];
+let usbFlashing = false;
+let usbRolesLoaded = false;
+
+async function pollUsb() {
+  try {
+    const resp = await fetch('/api/usb_devices');
+    const data = await resp.json();
+    usbPorts = data.ports || [];
+  } catch {
+    usbPorts = [];
+  }
+  const sec = document.getElementById('usb-section');
+  if (usbPorts.length > 0) {
+    sec.classList.add('show');
+    document.getElementById('usb-port-info').textContent =
+      usbPorts.map(p => p.device + ' — ' + p.description).join(', ');
+    if (!usbRolesLoaded) loadUsbRoles();
+  } else if (!usbFlashing) {
+    sec.classList.remove('show');
+  }
+}
+
+async function loadUsbRoles() {
+  const sel = document.getElementById('usb-role-select');
+  try {
+    const resp = await fetch('/api/roles');
+    const data = await resp.json();
+    sel.innerHTML = '';
+    data.roles.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.role;
+      opt.textContent = r.role + (r.source_fw ? '  ' + r.source_fw : '');
+      sel.appendChild(opt);
+    });
+    usbRolesLoaded = true;
+  } catch {
+    sel.innerHTML = '<option value="">error</option>';
+  }
+}
+
+document.getElementById('usb-flash-btn').addEventListener('click', async () => {
+  if (usbFlashing) return;
+  const role = document.getElementById('usb-role-select').value;
+  if (!role) return;
+  const port = usbPorts.length > 0 ? usbPorts[0].device : '';
+  if (!port) return;
+  if (!confirm(`Flash "${role}" firmware via USB to ${port}?`)) return;
+
+  const log = document.getElementById('usb-log');
+  log.textContent = '';
+  log.classList.add('show');
+  usbFlashing = true;
+  document.getElementById('usb-flash-btn').disabled = true;
+
+  let resp;
+  try {
+    resp = await fetch('/api/usb_flash', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, port }),
+    });
+  } catch (e) {
+    log.textContent = '\u2717 Network error: ' + e.message + '\n';
+    usbFlashing = false;
+    document.getElementById('usb-flash-btn').disabled = false;
+    return;
+  }
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    log.textContent = '\u2717 ' + (err.error || resp.statusText) + '\n';
+    usbFlashing = false;
+    document.getElementById('usb-flash-btn').disabled = false;
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6);
+          if (payload === '__DONE__') {
+            usbFlashing = false;
+            document.getElementById('usb-flash-btn').disabled = false;
+            return;
+          }
+          try { log.textContent += JSON.parse(payload) + '\n'; }
+          catch { log.textContent += payload + '\n'; }
+          log.scrollTop = log.scrollHeight;
+        }
+      }
+    }
+  } catch (e) {
+    log.textContent += '\n\u2717 Stream error: ' + e.message + '\n';
+  }
+  usbFlashing = false;
+  document.getElementById('usb-flash-btn').disabled = false;
+});
+
+// Poll for USB devices every 5s
+pollUsb();
+setInterval(pollUsb, 5000);
 
 // ── Close panel ───────────────────────────────────────────────────────────────
 document.getElementById('close-btn').addEventListener('click', closePanel);
