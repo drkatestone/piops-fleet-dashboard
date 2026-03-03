@@ -233,6 +233,32 @@ main {
 .touch-ch-delta { color: #64748b; font-size: 0.58rem; margin-top: 2px; }
 .touch-ch.active .touch-ch-delta { color: #34d399; }
 
+/* ── Audio track list ───────────────────────────────────────────────────── */
+.track-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.track-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  font-size: 0.72rem;
+  font-family: monospace;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+.track-row:hover { background: #1e293b; border-color: #334155; }
+.track-row.playing { border-color: #34d399; background: #34d39912; }
+.track-num { color: #475569; min-width: 1.5em; text-align: right; }
+.track-name { color: #cbd5e1; flex: 1; }
+.track-row.playing .track-name { color: #34d399; }
+.track-indicator { color: #34d399; font-size: 0.8rem; }
+
 .cmd-row { display: flex; gap: 0.4rem; }
 .cmd-input {
   flex: 1;
@@ -493,6 +519,7 @@ const TELEM_GROUPS = [
   { name: 'Temperature', keys: ['temps','temp_max','temp_ctrl','temp_addrs'] },
   { name: 'Fan',         keys: ['fan_percent','fan_pwm_raw','fan_status'] },
   { name: 'Touch',       keys: ['touch_data','state','channels'], custom: 'touch' },
+  { name: 'Audio',       keys: ['tracks','state'], custom: 'audio' },
 ];
 const UNITS = {
   vbus:'V', current_a:'A', power_w:'W', soc:'%',
@@ -601,28 +628,71 @@ function renderPanel(d) {
     `<span class="dk">${k}</span><span class="dv">${v}</span>`
   ).join('');
 
-  // Quick commands
+  // Quick commands — role-specific buttons
   const qb = document.getElementById('quick-btns');
   qb.innerHTML = '';
-  const cmds = [['status', ''], ['reboot', 'red']];
-  if (d.fw && d.fw.includes('lid-av')) {
-    cmds.unshift(['mode:2', 'green'], ['mode:1', ''], ['mode:0', '']);
+  const fw = d.fw || '';
+
+  // Role-specific commands (before common ones)
+  const roleCmds = [];
+
+  if (fw.includes('lid-av')) {
+    roleCmds.push(
+      ['mode:2', 'green', 'heartbeat'],
+      ['mode:1', '', 'orbit'],
+      ['mode:0', '', 'off'],
+      ['bri:50,50', '', 'bri 50%'],
+      ['bri:100,100', '', 'bri 100%'],
+      ['bri:20,20', '', 'bri 20%'],
+    );
   }
-  if (d.fw && d.fw.includes('touch')) {
-    cmds.unshift(['recalibrate', 'green']);
+
+  if (fw.includes('touch') && !fw.includes('ble-midi')) {
+    roleCmds.push(
+      ['recalibrate', 'green', 'recalibrate'],
+    );
   }
-  cmds.forEach(([cmd, cls]) => {
+
+  if (fw.includes('audio')) {
+    roleCmds.push(
+      ['play', 'green', 'play'],
+      ['stop', 'red', 'stop'],
+      ['pause', '', 'pause'],
+      ['resume', '', 'resume'],
+      ['prev', '', 'prev'],
+      ['next', '', 'next'],
+      ['volume:100', '', 'vol 100'],
+      ['volume:80', '', 'vol 80'],
+      ['volume:50', '', 'vol 50'],
+      ['volume:20', '', 'vol 20'],
+      ['list', '', 'rescan SD'],
+    );
+  }
+
+  if (fw.includes('power')) {
+    roleCmds.push(
+      ['fan:auto', 'green', 'fan auto'],
+      ['fan:100', '', 'fan 100%'],
+      ['fan:0', '', 'fan off'],
+    );
+  }
+
+  // Common commands (all roles)
+  const allCmds = [...roleCmds, ['status', '', 'status'], ['reboot', 'red', 'reboot']];
+
+  allCmds.forEach(([cmd, cls, label]) => {
     const b = document.createElement('button');
     b.className = 'btn' + (cls ? ' ' + cls : '');
-    b.textContent = cmd;
+    b.textContent = label || cmd;
     b.onclick = () => sendCmd(d.device_id, cmd);
     qb.appendChild(b);
   });
+
   // BLE-MIDI: "Prepare OTA" button — publishes retained "ota" flag
-  if (d.fw && d.fw.includes('ble-midi')) {
+  if (fw.includes('ble-midi')) {
     const ob = document.createElement('button');
     ob.className = 'btn amber';
-    ob.textContent = '\u{1F4E1} Prepare OTA';
+    ob.textContent = 'Prepare OTA';
     ob.onclick = () => {
       if (!confirm('This will set the OTA flag for ' + d.device_id +
           '.\n\nPower-cycle the device to enter OTA mode.\nThe flag is cleared automatically after boot.')) return;
@@ -631,7 +701,7 @@ function renderPanel(d) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cmd: 'ota', retain: true }),
       }).then(() => {
-        ob.textContent = '\u2705 OTA flag set — power-cycle device';
+        ob.textContent = 'OTA flag set — power-cycle device';
         ob.disabled = true;
       });
     };
@@ -682,7 +752,55 @@ function renderPanel(d) {
       const sec = document.createElement('div');
       sec.className = 'ps ps-telem-group';
 
-      if (group.custom === 'touch' && d.telemetry.touch_data) {
+      if (group.custom === 'audio' && d.telemetry.tracks) {
+        // Custom audio track list with play buttons
+        sec.innerHTML = `<div class="ps-title">${group.name}</div><div class="track-list" id="track-list"></div>`;
+        const list = sec.querySelector('.track-list');
+        try {
+          const tracks = JSON.parse(d.telemetry.tracks.value);
+          // Get current playing state
+          let playingTrack = '';
+          let isPlaying = false;
+          if (d.telemetry.state) {
+            try {
+              const st = JSON.parse(d.telemetry.state.value);
+              playingTrack = st.track || '';
+              isPlaying = st.playing || false;
+            } catch {}
+          }
+          tracks.forEach((name, i) => {
+            const row = document.createElement('div');
+            const active = isPlaying && name === playingTrack;
+            row.className = 'track-row' + (active ? ' playing' : '');
+            row.innerHTML =
+              `<span class="track-num">${i}</span>` +
+              `<span class="track-name">${escHtml(name)}</span>` +
+              (active ? '<span class="track-indicator">playing</span>' : '');
+            row.onclick = () => sendCmd(d.device_id, 'play:' + name);
+            row.title = 'play:' + name;
+            list.appendChild(row);
+          });
+        } catch {}
+        // Playback state below track list
+        if (d.telemetry.state) {
+          const dg = document.createElement('div');
+          dg.className = 'data-grid';
+          dg.style.marginTop = '0.5rem';
+          try {
+            const st = JSON.parse(d.telemetry.state.value);
+            const pairs = [
+              ['Status', st.playing ? (st.paused ? 'paused' : 'playing') : 'stopped'],
+              ['Volume', st.volume + '%'],
+            ];
+            for (const [k, v] of pairs) {
+              dg.innerHTML += `<span class="dk">${k}</span><span class="dv">${v}</span>`;
+            }
+          } catch {
+            dg.innerHTML += `<span class="dk">state</span><span class="dv">${escHtml(d.telemetry.state.value)}</span>`;
+          }
+          sec.appendChild(dg);
+        }
+      } else if (group.custom === 'touch' && d.telemetry.touch_data) {
         // Custom touch channel visualiser
         sec.innerHTML = `<div class="ps-title">${group.name}</div><div class="touch-grid" id="touch-grid"></div>`;
         const grid = sec.querySelector('.touch-grid');

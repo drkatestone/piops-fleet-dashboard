@@ -472,53 +472,64 @@ def api_adopt(device_id):
 
     mode = build_mode(role)
 
+    expected_fw = source_fw(role)
+
     def generate():
         yield f"data: {json.dumps(f'▶ Adopting {device_id} as {role}')}\n\n"
         yield f"data: {json.dumps(f'  Target IP: {ip}')}\n\n"
 
-        # Step 1: Deploy role firmware to device IP
-        yield f"data: {json.dumps(f'▶ deploy.sh {role} {ip} --{mode}')}\n\n"
-        proc = subprocess.Popen(
-            [str(REPO_ROOT / "tools" / "deploy.sh"), role, ip, f"--{mode}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
-        )
-        for line in proc.stdout:
-            yield f"data: {json.dumps(line.rstrip())}\n\n"
-        proc.wait()
+        # Check if device is already running the correct firmware for this role
+        with _lock:
+            d_now = dict(devices.get(device_id, {}))
+        already_correct = d_now.get("fw") == expected_fw
 
-        if proc.returncode != 0:
-            yield f"data: {json.dumps(f'✗ Deploy failed (exit {proc.returncode})')}\n\n"
-            yield "data: __DONE__\n\n"
-            return
+        if already_correct:
+            yield f"data: {json.dumps(f'✓ Device already running {expected_fw} — skipping deploy')}\n\n"
+            new_did = device_id
+        else:
+            # Step 1: Deploy role firmware to device IP
+            yield f"data: {json.dumps(f'▶ deploy.sh {role} {ip} --{mode}')}\n\n"
+            proc = subprocess.Popen(
+                [str(REPO_ROOT / "tools" / "deploy.sh"), role, ip, f"--{mode}"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            for line in proc.stdout:
+                yield f"data: {json.dumps(line.rstrip())}\n\n"
+            proc.wait()
 
-        yield f"data: {json.dumps('✓ Deploy succeeded — waiting for new identity...')}\n\n"
+            if proc.returncode != 0:
+                yield f"data: {json.dumps(f'✗ Deploy failed (exit {proc.returncode})')}\n\n"
+                yield "data: __DONE__\n\n"
+                return
 
-        # Step 2: Poll MQTT state for heartbeat from same IP with new device_id
-        new_did = None
-        deadline = time.time() + 90
-        while time.time() < deadline:
-            time.sleep(3)
-            with _lock:
-                for did, dev in devices.items():
-                    if dev.get("ip") == ip and did != device_id:
-                        age = time.time() - dev.get("last_seen", 0)
-                        if age < OFFLINE_SECS:
-                            new_did = did
-                            break
-            if new_did:
-                break
-            remaining = int(deadline - time.time())
-            if remaining > 0 and remaining % 15 < 3:
-                yield f"data: {json.dumps(f'  Waiting for heartbeat... ({remaining}s remaining)')}\n\n"
+            yield f"data: {json.dumps('✓ Deploy succeeded — waiting for identity...')}\n\n"
 
-        if not new_did:
-            yield f"data: {json.dumps('✗ Timed out waiting for new device identity')}\n\n"
-            yield f"data: {json.dumps('  Device may have rebooted — check Unknown Live manually')}\n\n"
-            yield "data: __DONE__\n\n"
-            return
+            # Step 2: Poll MQTT state for heartbeat from same IP (new or same device_id)
+            new_did = None
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                time.sleep(3)
+                with _lock:
+                    for did, dev in devices.items():
+                        if dev.get("ip") == ip:
+                            age = time.time() - dev.get("last_seen", 0)
+                            if age < OFFLINE_SECS and dev.get("fw", "") == expected_fw:
+                                new_did = did
+                                break
+                if new_did:
+                    break
+                remaining = int(deadline - time.time())
+                if remaining > 0 and remaining % 15 < 3:
+                    yield f"data: {json.dumps(f'  Waiting for heartbeat... ({remaining}s remaining)')}\n\n"
 
-        yield f"data: {json.dumps(f'✓ New identity: {new_did}')}\n\n"
+            if not new_did:
+                yield f"data: {json.dumps('✗ Timed out waiting for device identity')}\n\n"
+                yield f"data: {json.dumps('  Device may have rebooted — check Unknown Live manually')}\n\n"
+                yield "data: __DONE__\n\n"
+                return
+
+        yield f"data: {json.dumps(f'✓ Identity: {new_did}')}\n\n"
 
         # Step 3: Write .device_id
         try:
