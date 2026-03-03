@@ -550,7 +550,18 @@ def api_adopt(device_id):
         except Exception as exc:
             yield f"data: {json.dumps(f'⚠ Could not update platformio.ini: {exc}')}\n\n"
 
-        # Step 5: Git add + commit
+        # Step 5: DHCP reservation
+        net_mac = lookup_mac_from_lease(ip)
+        if net_mac:
+            err = add_dhcp_reservation(role, net_mac, ip)
+            if err:
+                yield f"data: {json.dumps(f'⚠ DHCP reservation: {err}')}\n\n"
+            else:
+                yield f"data: {json.dumps(f'✓ DHCP reservation: {net_mac} → {ip} (esp32-{role}.home)')}\n\n"
+        else:
+            yield f"data: {json.dumps(f'⚠ Could not find network MAC for {ip} in DHCP leases')}\n\n"
+
+        # Step 6: Git add + commit
         try:
             files_to_add = [f"devices/{role}/.device_id"]
             ini_path = REPO_ROOT / "devices" / role / "platformio.ini"
@@ -577,6 +588,76 @@ def api_adopt(device_id):
         yield "data: __DONE__\n\n"
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream")
+
+
+DNSMASQ_CONF = Path("/etc/dnsmasq.d/local.conf")
+DHCP_LEASES  = Path("/var/lib/misc/dnsmasq.leases")
+
+
+def lookup_mac_from_lease(ip: str) -> str | None:
+    """Find the network MAC address for an IP from dnsmasq leases."""
+    if not DHCP_LEASES.exists():
+        return None
+    for line in DHCP_LEASES.read_text().splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == ip:
+            return parts[1].upper()
+    return None
+
+
+def add_dhcp_reservation(role: str, mac: str, ip: str) -> str | None:
+    """Add a static DHCP reservation + DNS entry to dnsmasq config.
+    Returns None on success, error string on failure."""
+    hostname = f"esp32-{role}"
+    dns_line = f"address=/{hostname}.home/{ip}"
+    dhcp_line = f"dhcp-host={mac},{hostname},{ip}"
+
+    try:
+        conf = DNSMASQ_CONF.read_text()
+    except Exception as e:
+        return f"Cannot read dnsmasq config: {e}"
+
+    # Check if this MAC or hostname already has a reservation
+    if mac in conf:
+        return None   # already reserved
+    if f",{hostname}," in conf:
+        return None   # hostname already reserved
+
+    # Append to ESP32 reservations section
+    if "# ESP32 reservations" in conf:
+        conf = conf.replace(
+            "# ESP32 reservations",
+            f"# ESP32 reservations\n# (auto-added by fleet dashboard)"
+            if "# (auto-added by fleet dashboard)" not in conf
+            else "# ESP32 reservations"
+        )
+
+    # Add DNS and DHCP lines before trailing newlines
+    conf = conf.rstrip("\n")
+    conf += f"\naddress=/{hostname}.home/{ip}\n"
+    conf += f"dhcp-host={mac},{hostname},{ip}\n"
+
+    try:
+        # Write via sudo tee (config is root-owned)
+        proc = subprocess.run(
+            ["sudo", "tee", str(DNSMASQ_CONF)],
+            input=conf, capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            return f"Failed to write dnsmasq config: {proc.stderr}"
+
+        # Restart dnsmasq (reload doesn't pick up new address= lines)
+        proc = subprocess.run(
+            ["sudo", "systemctl", "restart", "dnsmasq"],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            return f"Failed to reload dnsmasq: {proc.stderr}"
+
+    except Exception as e:
+        return f"DHCP reservation error: {e}"
+
+    return None
 
 
 def update_upload_port(role: str, ip: str) -> bool:
